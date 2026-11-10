@@ -1,0 +1,8 @@
+# Only the app itself is published. Everything else (client photos, artwork, notes, tests) stays on this computer.
+*
+!.gitignore
+!index.html
+!studio.html
+!three.min.js
+!test-sheet.html
+!stencil-lab.html

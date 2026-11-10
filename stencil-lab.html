@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inkling stencil lab</title>
+<style>
+:root{--bg:#f4f3f7;--card:#fff;--ink:#1d1b26;--mute:#6b6878;--line:#e2e0ea;--acc:#5b3fd6;--warn:#a2410f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1300px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}
+.mute{color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin:14px 0}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(230px,1fr));gap:12px 18px}
+label{display:block;font-size:13px;color:var(--mute)}
+label b{color:var(--ink);font-weight:600}
+select,input,button{font:inherit;padding:7px 10px;border-radius:8px;border:1px solid var(--line);background:#fff;width:100%}
+input[type=range]{padding:0;accent-color:var(--acc)}
+input[type=checkbox]{width:auto;accent-color:var(--acc)}
+button{cursor:pointer;width:auto}
+button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
+.bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.views{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+@media (max-width:760px){.views{grid-template-columns:1fr}}
+.views canvas{width:100%;height:auto;background:#fff;border:1px solid var(--line);border-radius:8px;display:block}
+#warn{color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Inkling stencil lab</h1>
+  <div class="mute">Turns artwork into a clean outline stencil: every drawn line plus every edge where one colour or shade meets another, redrawn as smooth even lines. No shading. A test page; not part of Inkling yet.</div>
+
+  <div class="card">
+    <div class="bar"><input id="file" type="file" accept="image/*" style="width:auto"><span class="mute" id="st">Choose an artwork.</span></div>
+  </div>
+
+  <div class="card grid">
+    <label>Artwork type
+      <select id="mode"><option value="drawing">Drawing or flash (has outlines)</option><option value="photo">Photo or realistic art</option><option value="bw">Already black &amp; white (keep as it is)</option></select></label>
+    <label>Tattoo width <b id="wv"></b>
+      <input id="wcm" type="range" min="5" max="40" step="1" value="20"></label>
+    <label>Detail <b id="dv"></b>
+      <input id="detail" type="range" min="1" max="5" step="1" value="3"></label>
+    <label>Line thickness
+      <select id="lw"><option value="2">Fine 0.25 mm (realistic)</option><option value="3" selected>Medium 0.38 mm</option><option value="4">Bold 0.5 mm (traditional)</option><option value="5">Extra bold 0.63 mm</option></select></label>
+    <div>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input id="follow" type="checkbox"> Keep the artwork's own line thickness</label>
+      <label style="display:flex;gap:8px;align-items:center;margin-top:6px"><input id="nobg" type="checkbox" checked> Leave out plain background (photos)</label>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="bar">
+      <label style="width:auto">Preview <select id="look" style="width:auto"><option value="paper">Paper (black)</option><option value="skin">On skin (purple)</option></select></label>
+      <label style="width:auto">Printer shrinks to <input id="pscale" type="number" min="60" max="130" step="0.5" value="90" style="width:80px"> %</label>
+      <button class="pri" id="dl">Download PNG for printer</button>
+    </div>
+    <div id="warn" style="margin-top:6px"></div>
+  </div>
+
+  <div class="views"><canvas id="src"></canvas><canvas id="out"></canvas></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const DPI=203,PPM=DPI/25.4;            // printer dots per mm
+let IMG=null,RES=null;
+
+/* ---------- small image-processing toolkit (all on flat arrays) ---------- */
+function boxesForGauss(s,n){const wI=Math.sqrt(12*s*s/n+1);let wl=Math.floor(wI);if(wl%2===0)wl--;const wu=wl+2,m=Math.round((12*s*s-n*wl*wl-4*n*wl-3*n)/(-4*wl-4)),a=[];for(let i=0;i<n;i++)a.push(i<m?wl:wu);return a}
+function boxH(s,d,W,H,r){const k=1/(r+r+1);for(let y=0;y<H;y++){const o=y*W;let acc=0;for(let j=-r-1;j<r;j++)acc+=s[o+Math.min(Math.max(j,0),W-1)];for(let x=0;x<W;x++){acc+=s[o+Math.min(x+r,W-1)]-s[o+Math.max(x-r-1,0)];d[o+x]=acc*k}}}
+function boxV(s,d,W,H,r){const k=1/(r+r+1);for(let x=0;x<W;x++){let acc=0;for(let j=-r-1;j<r;j++)acc+=s[Math.min(Math.max(j,0),H-1)*W+x];for(let y=0;y<H;y++){acc+=s[Math.min(y+r,H-1)*W+x]-s[Math.max(y-r-1,0)*W+x];d[y*W+x]=acc*k}}}
+function blur(src,W,H,sig){const a=Float32Array.from(src);if(sig<0.35)return a;const b=new Float32Array(a.length);for(const w of boxesForGauss(sig,3)){const r=(w-1)>>1;boxH(a,b,W,H,r);boxV(b,a,W,H,r)}return a}
+/* distance (px) from every pixel with m=1 to the nearest m=0 pixel (image edge counts as 0) */
+function dist(m,W,H){const d=new Float32Array(W*H),S=1.4142;for(let i=0;i<d.length;i++)d[i]=m[i]?1e9:0;
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){const i=y*W+x;if(!d[i])continue;let v=d[i];
+  v=Math.min(v,x>0?d[i-1]+1:1,y>0?d[i-W]+1:1,x>0&&y>0?d[i-W-1]+S:S,x<W-1&&y>0?d[i-W+1]+S:S);d[i]=v}
+ for(let y=H-1;y>=0;y--)for(let x=W-1;x>=0;x--){const i=y*W+x;if(!d[i])continue;let v=d[i];
+  v=Math.min(v,x<W-1?d[i+1]+1:1,y<H-1?d[i+W]+1:1,x<W-1&&y<H-1?d[i+W+1]+S:S,x>0&&y<H-1?d[i+W-1]+S:S);d[i]=v}
+ return d}
+/* remove 8-connected blobs smaller than minPx */
+function dropSmall(m,W,H,minPx){const seen=new Uint8Array(W*H),st=new Int32Array(W*H);
+ for(let s=0;s<m.length;s++){if(!m[s]||seen[s])continue;let n=0,top=0;st[top++]=s;seen[s]=1;const comp=[];
+  while(top){const i=st[--top];comp.push(i);n++;const x=i%W,y=(i-x)/W;
+   for(let dy=-1;dy<=1;dy++)for(let dx=-1;dx<=1;dx++){const xx=x+dx,yy=y+dy;if(xx<0||yy<0||xx>=W||yy>=H)continue;const j=yy*W+xx;if(m[j]&&!seen[j]){seen[j]=1;st[top++]=j}}}
+  if(n<minPx)for(const i of comp)m[i]=0}}
+/* Zhang–Suen thinning -> 1 px centre lines */
+function thin(m,W,H){for(let x=0;x<W;x++){m[x]=0;m[(H-1)*W+x]=0}for(let y=0;y<H;y++){m[y*W]=0;m[y*W+W-1]=0}
+ let list=[];for(let i=0;i<m.length;i++)if(m[i])list.push(i);let changed=true;
+ while(changed){changed=false;for(let step=0;step<2;step++){const del=[];
+  for(const i of list){if(!m[i])continue;const p2=m[i-W],p3=m[i-W+1],p4=m[i+1],p5=m[i+W+1],p6=m[i+W],p7=m[i+W-1],p8=m[i-1],p9=m[i-W-1],B=p2+p3+p4+p5+p6+p7+p8+p9;if(B<2||B>6)continue;
+   const A=(!p2&&p3)+(!p3&&p4)+(!p4&&p5)+(!p5&&p6)+(!p6&&p7)+(!p7&&p8)+(!p8&&p9)+(!p9&&p2);if(A!==1)continue;
+   if(step===0?(p2&&p4&&p6)||(p4&&p6&&p8):(p2&&p4&&p8)||(p2&&p6&&p8))continue;del.push(i)}
+  for(const i of del)m[i]=0;if(del.length)changed=true}list=list.filter(i=>m[i])}}
+/* cut off short side-branches ("hairs") left by thinning */
+function prune(m,W,H,maxLen){const off=[-W-1,-W,-W+1,-1,1,W-1,W,W+1],nb=i=>{let c=0;for(const o of off)c+=m[i+o];return c};
+ const ends=[];for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;if(m[i]&&nb(i)===1)ends.push(i)}
+ for(const e of ends){if(!m[e]||nb(e)!==1)continue;const path=[e];let cur=e,ok=false;
+  while(path.length<=maxLen){const c=[];for(const o of off){const j=cur+o;if(m[j]&&!path.includes(j))c.push(j)}
+   if(c.length!==1){ok=c.length>=2;if(ok)path.pop();break}if(nb(c[0])>=3){ok=true;break}path.push(c[0]);cur=c[0]}
+  if(ok)for(const i of path)m[i]=0}}
+/* pixel pattern of a round mark d printer-dots wide */
+function discOff(d){const o=[],b=Math.round(.5-d/2),r2=(d/2)*(d/2);for(let j=0;j<d;j++)for(let i=0;i<d;i++){const dx=i+.5-d/2,dy=j+.5-d/2;if(dx*dx+dy*dy<=r2+.01)o.push([i+b,j+b])}return o}
+function stamp(out,W,H,x,y,off){for(const [i,j] of off){const xx=x+i,yy=y+j;if(xx>=0&&yy>=0&&xx<W&&yy<H)out[yy*W+xx]=1}}
+
+/* plain background = smooth area that can be reached from the picture edge without crossing an edge;
+   returns distance (px) inside that area, 0 elsewhere */
+function bgMask(L,W,H,mm){const g=blur(L,W,H,mm(0.5)),m=new Uint8Array(W*H),st=new Int32Array(W*H),tol=2.2;let top=0;
+ const push=i=>{if(!m[i]){m[i]=1;st[top++]=i}};for(let x=0;x<W;x+=2){push(x);push((H-1)*W+x)}for(let y=0;y<H;y+=2){push(y*W);push(y*W+W-1)}
+ while(top){const i=st[--top],x=i%W,v=g[i];const ns=[x>0?i-1:-1,x<W-1?i+1:-1,i>=W?i-W:-1,i+W<W*H?i+W:-1];for(const j of ns)if(j>=0&&!m[j]&&Math.abs(g[j]-v)<tol){m[j]=1;st[top++]=j}}
+ let n=0;for(let i=0;i<W*H;i++)n+=m[i];if(n<W*H*.03)return null;dropSmall(m,W,H,Math.round(mm(4)**2));return dist(m,W,H)}
+/* merge tiny patches of a tone band into their neighbour so shading edges stay simple */
+function cleanBands(band,W,H,minPx){for(let pass=0;pass<2;pass++){const seen=new Uint8Array(W*H),st=new Int32Array(W*H);
+ for(let s=0;s<band.length;s++){if(seen[s])continue;const v=band[s];let top=0,nbv=-1;st[top++]=s;seen[s]=1;const comp=[];
+  while(top){const i=st[--top];comp.push(i);const x=i%W;const ns=[x>0?i-1:-1,x<W-1?i+1:-1,i-W,i+W];
+   for(const j of ns){if(j<0||j>=band.length)continue;if(band[j]===v){if(!seen[j]){seen[j]=1;st[top++]=j}}else if(nbv<0)nbv=band[j]}}
+  if(comp.length<minPx&&nbv>=0)for(const i of comp)band[i]=nbv}}}
+
+/* ---------- Inkling outline stencil: ink lines + every colour/tone boundary, as smooth even strokes ---------- */
+/* needs: blur, dist, dropSmall, thin, prune, PPM (from the lab page) */
+
+function toLab(px,N){const L=new Float32Array(N),A=new Float32Array(N),B=new Float32Array(N),lin=new Float32Array(256);
+ for(let v=0;v<256;v++){const c=v/255;lin[v]=c<=0.04045?c/12.92:Math.pow((c+0.055)/1.055,2.4)}
+ const f=t=>t>0.008856?Math.cbrt(t):7.787*t+16/116;
+ for(let i=0;i<N;i++){const r=lin[px[i*4]],g=lin[px[i*4+1]],b=lin[px[i*4+2]];
+  const X=(0.4124*r+0.3576*g+0.1805*b)/0.9505,Y=0.2126*r+0.7152*g+0.0722*b,Z=(0.0193*r+0.1192*g+0.9505*b)/1.089;
+  const fx=f(X),fy=f(Y),fz=f(Z);L[i]=116*fy-16;A[i]=500*(fx-fy);B[i]=200*(fy-fz)}return[L,A,B]}
+
+/* Kuwahara filter: flattens paint texture / paper grain but keeps edges sharp */
+function kuwahara(L,A,B,W,H,r){const W1=W+1,S=(W+1)*(H+1),iL=new Float64Array(S),iQ=new Float64Array(S),iA=new Float64Array(S),iB=new Float64Array(S);
+ for(let y=0;y<H;y++){let sl=0,sq=0,sa=0,sb=0;for(let x=0;x<W;x++){const i=y*W+x,v=L[i];sl+=v;sq+=v*v;sa+=A[i];sb+=B[i];const j=(y+1)*W1+x+1;
+  iL[j]=iL[j-W1]+sl;iQ[j]=iQ[j-W1]+sq;iA[j]=iA[j-W1]+sa;iB[j]=iB[j-W1]+sb}}
+ const oL=new Float32Array(W*H),oA=new Float32Array(W*H),oB=new Float32Array(W*H),box=(T,x0,y0,x1,y1)=>T[y1*W1+x1]-T[y0*W1+x1]-T[y1*W1+x0]+T[y0*W1+x0];
+ for(let y=0;y<H;y++)for(let x=0;x<W;x++){let best=1e18,bl=0,ba=0,bb=0;
+  for(let q=0;q<4;q++){const x0=Math.max(0,q&1?x:x-r),x1=Math.min(W,(q&1?x+r:x)+1),y0=Math.max(0,q&2?y:y-r),y1=Math.min(H,(q&2?y+r:y)+1),n=(x1-x0)*(y1-y0);
+   const m=box(iL,x0,y0,x1,y1)/n,v=box(iQ,x0,y0,x1,y1)/n-m*m;if(v<best){best=v;bl=m;ba=box(iA,x0,y0,x1,y1)/n;bb=box(iB,x0,y0,x1,y1)/n}}
+  const i=y*W+x;oL[i]=bl;oA[i]=ba;oB[i]=bb}
+ return[oL,oA,oB]}
+
+/* Canny edges on a colour (Lab) image; thresholds are colour differences (Delta E) */
+function canny(L,A,B,W,H,hiD,loD){const N=W*H,l=blur(L,W,H,1),a=blur(A,W,H,1),b=blur(B,W,H,1),gx=new Float32Array(N),gy=new Float32Array(N),mag=new Float32Array(N);
+ for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;let sx=0,sy=0,best=-1;
+  for(const c of[l,a,b]){const dx=(c[i+1]-c[i-1])/2,dy=(c[i+W]-c[i-W])/2;sx+=dx*dx;sy+=dy*dy;}
+  // direction from the channel sum (sign from L), magnitude from all channels
+  const dxl=(l[i+1]-l[i-1])+(a[i+1]-a[i-1])*0.5+(b[i+1]-b[i-1])*0.5,dyl=(l[i+W]-l[i-W])+(a[i+W]-a[i-W])*0.5+(b[i+W]-b[i-W])*0.5;
+  mag[i]=Math.sqrt(sx+sy);gx[i]=dxl;gy[i]=dyl}
+ // a sharp step of size D blurred by sigma 1 gives a peak gradient of about 0.4*D
+ const hi=hiD*0.4,lo=loD*0.4,e=new Uint8Array(N);
+ for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x,m=mag[i];if(m<lo)continue;
+  const ang=Math.atan2(gy[i],gx[i]),t=((ang*8/Math.PI)+16)%8;let o;
+  if(t<1||t>=7)o=1;else if(t<3)o=W+1;else if(t<5)o=W;else o=W-1;
+  if(m>=mag[i+o]&&m>mag[i-o])e[i]=m>=hi?2:1}
+ // hysteresis: keep weak edges only when connected to strong ones
+ const st=new Int32Array(N);let top=0;for(let i=0;i<N;i++)if(e[i]===2)st[top++]=i;
+ const off=[-W-1,-W,-W+1,-1,1,W-1,W,W+1];while(top){const i=st[--top];for(const d of off){const j=i+d;if(e[j]===1){e[j]=2;st[top++]=j}}}
+ for(let i=0;i<N;i++)e[i]=e[i]===2?1:0;return e}
+
+/* remove corner pixels so lines are exactly 1 px (8-connected) */
+function unstair(m,W,H){const P=[[-1,-1],[0,-1],[1,-1],[-1,0],[1,0],[-1,1],[0,1],[1,1]];
+ // remove a pixel when its neighbours stay connected without it (line becomes exactly 1 px wide)
+ for(let pass=0;pass<3;pass++){let ch=0;for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;if(!m[i])continue;
+  const n=m[i-W],e=m[i+1],s2=m[i+W],w=m[i-1];if(!((n&&e)||(e&&s2)||(s2&&w)||(w&&n)))continue;
+  const on=[];for(let k=0;k<8;k++)if(m[i+P[k][1]*W+P[k][0]])on.push(k);if(on.length<2||on.length>5)continue;
+  const lab=on.map((_,j)=>j),f=j=>lab[j]===j?j:(lab[j]=f(lab[j]));
+  for(let p=0;p<on.length;p++)for(let q=p+1;q<on.length;q++){const A=P[on[p]],B=P[on[q]];if(Math.abs(A[0]-B[0])<=1&&Math.abs(A[1]-B[1])<=1)lab[f(p)]=f(q)}
+  let comps=0;for(let j=0;j<on.length;j++)if(f(j)===j)comps++;if(comps===1){m[i]=0;ch++}}if(!ch)break}}
+
+const OFF8=W=>[-W-1,-W,-W+1,-1,1,W-1,W,W+1];
+function degree(m,W,H){const d=new Uint8Array(W*H),o=OFF8(W);for(let y=1;y<H-1;y++)for(let x=1;x<W-1;x++){const i=y*W+x;if(!m[i])continue;let c=0;for(const k of o)c+=m[i+k];d[i]=c}return d}
+
+/* join line ends to a nearby line they are heading towards (closes small breaks) */
+function linkGaps(sk,target,W,H,gap){const deg=degree(sk,W,H),o=OFF8(W),R=Math.ceil(gap),adds=[];
+ for(let y=R+1;y<H-R-1;y++)for(let x=R+1;x<W-R-1;x++){const e=y*W+x;if(!sk[e]||deg[e]!==1)continue;
+  // walk back along own line to find direction and the pixels to ignore
+  const own=new Set([e]);let fr=[e],back=e;for(let s=0;s<R*3&&fr.length;s++){const nf=[];for(const i of fr)for(const k of o){const j=i+k;if(sk[j]&&!own.has(j)){own.add(j);nf.push(j)}}fr=nf;if(s===Math.min(5,R)&&nf.length)back=nf[0]}
+  const bx=back%W,by=(back-bx)/W;let dx=x-bx,dy=y-by;const dl=Math.hypot(dx,dy)||1;dx/=dl;dy/=dl;
+  let best=-1,bs=1e9;for(let v=-R;v<=R;v++)for(let u=-R;u<=R;u++){const j=e+v*W+u;if(!target[j]||own.has(j))continue;const d=Math.hypot(u,v);if(d>gap||d<1)continue;
+   const c=(u*dx+v*dy)/d;if(c<0.45)continue;const sc=d*(2-c);if(sc<bs){bs=sc;best=j}}
+  if(best>=0)adds.push([x,y,best%W,(best-best%W)/W])}
+ for(const [x0,y0,x1,y1] of adds){const n=Math.max(Math.abs(x1-x0),Math.abs(y1-y0));for(let k=0;k<=n;k++){const xx=Math.round(x0+(x1-x0)*k/n),yy=Math.round(y0+(y1-y0)*k/n);sk[yy*W+xx]=1}}
+ return adds.length}
+
+/* follow 1-px lines into polylines */
+function tracePaths(sk,W,H){const deg=degree(sk,W,H),o=OFF8(W),vis=new Uint8Array(W*H),used=new Set(),paths=[];
+ const pt=i=>{const x=i%W;return[x,(i-x)/W]};
+ const walk=(a,b)=>{const p=[pt(a)];let prev=a,cur=b;
+  while(true){p.push(pt(cur));if(deg[cur]!==2)break;vis[cur]=1;let nx=-1;
+   for(const k of o){const j=cur+k;if(!sk[j]||j===prev)continue;if(deg[j]===2&&vis[j])continue;if(deg[j]!==2&&used.has(Math.min(cur,j)+':'+Math.max(cur,j)))continue;nx=j;if(deg[j]!==2)break}
+   if(nx<0)break;if(deg[nx]!==2)used.add(Math.min(cur,nx)+':'+Math.max(cur,nx));prev=cur;cur=nx}
+  return p};
+ for(let i=0;i<W*H;i++){if(!sk[i]||deg[i]===2||deg[i]===0)continue;
+  for(const k of o){const j=i+k;if(!sk[j])continue;if(deg[j]===2){if(vis[j])continue}else{const key=Math.min(i,j)+':'+Math.max(i,j);if(used.has(key))continue;used.add(key)}
+   paths.push({pts:walk(i,j),closed:false})}}
+ for(let i=0;i<W*H;i++){if(!sk[i]||deg[i]!==2||vis[i])continue;vis[i]=1;let nb=-1;for(const k of o)if(sk[i+k]){nb=i+k;break}
+  const p=walk(i,nb);paths.push({pts:p,closed:true})}
+ return paths}
+
+function smoothPath(p,closed,it){let a=p.pts;const n=a.length;if(n<3)return a;
+ for(let t=0;t<it;t++){const b=a.map(q=>q.slice());for(let k=0;k<n;k++){if(!closed&&(k===0||k===n-1))continue;const pa=a[(k-1+n)%n],pb=a[(k+1)%n];b[k][0]=(pa[0]+2*a[k][0]+pb[0])/4;b[k][1]=(pa[1]+2*a[k][1]+pb[1])/4}a=b}
+ return a}
+
+function componentSizes(m,W,H,fn){const seen=new Uint8Array(W*H),st=new Int32Array(W*H),o=OFF8(W);
+ for(let s=0;s<m.length;s++){if(!m[s]||seen[s])continue;let top=0;st[top++]=s;seen[s]=1;const comp=[];
+  while(top){const i=st[--top];comp.push(i);const x=i%W;for(const k of o){const j=i+k;if(j<0||j>=m.length)continue;const xx=j%W;if(Math.abs(xx-x)>1)continue;if(m[j]&&!seen[j]){seen[j]=1;st[top++]=j}}}
+  fn(comp)}}
+
+/* o = {type:'drawing'|'photo', widthCm, detail 1-5, lw (printer dots, 2-5), follow (keep the artwork's own line weight), solidMax (mm) } */
+function makeOutline(img,o){
+ const D=o.detail-1,photo=o.type==='photo';
+ const OW=Math.round(o.widthCm*10*PPM),OH=Math.round(OW*img.height/img.width);
+ const srcS=img.width/(o.widthCm*10),s=Math.max(4,Math.min(6,srcS));           // analysis pixels per mm
+ const W=Math.round(o.widthCm*10*s),H=Math.round(W*img.height/img.width),N=W*H,mm=v=>v*s;
+ const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});
+ x.fillStyle='#fff';x.fillRect(0,0,W,H);x.imageSmoothingQuality='high';x.drawImage(img,0,0,W,H);
+ const [L,A,B]=toLab(x.getImageData(0,0,W,H).data,N);
+ // 1. ink: drawn dark lines (darker than their surroundings, not a strong colour)
+ const Lb=blur(L,W,H,0.6),lm=blur(L,W,H,mm(photo?1:1.5)),ink=new Uint8Array(N);
+ const abs=photo?[45,55,62,68,74][D]:[38,42,46,50,54][D],rel=photo?[16,13,11,9,7][D]:[12,10,9,8,7][D];
+ const ls=blur(L,W,H,mm(0.45)),rr=photo?[9,7,5.5,4.5,3.5][D]:[10,8,6.5,5.5,4.5][D];
+ for(let i=0;i<N;i++){const ch=Math.hypot(A[i],B[i]),gray=ch<30||Lb[i]<22;ink[i]=(Lb[i]<abs&&Lb[i]<lm[i]-rel&&gray)||(Lb[i]<80&&Lb[i]<ls[i]-rr&&gray)?1:0}
+ // drop specks and short flecks (paint texture, stipple); keep compact blobs like eyes and dots
+ componentSizes(ink,W,H,comp=>{let x0=1e9,y0=1e9,x1=-1,y1=-1;for(const i of comp){const xx=i%W,yy=(i-xx)/W;if(xx<x0)x0=xx;if(xx>x1)x1=xx;if(yy<y0)y0=yy;if(yy>y1)y1=yy}
+  const bw=x1-x0+1,bh=y1-y0+1,diag=Math.hypot(bw,bh),compact=comp.length/(bw*bh)>0.4&&Math.min(bw,bh)/Math.max(bw,bh)>0.4;
+  const keep=diag>=mm([3,2.5,2,1.6,1.3][D])||(compact&&comp.length>=mm([0.9,0.8,0.7,0.6,0.5][D])**2);if(!keep)for(const i of comp)ink[i]=0});
+ // fill pinholes inside ink
+ {const h=new Uint8Array(N);for(let i=0;i<N;i++)h[i]=ink[i]?0:1;dropSmall(h,W,H,Math.round(mm(0.3)**2));for(let i=0;i<N;i++)if(!h[i])ink[i]=1}
+ // 2. split ink into lines and big black areas
+ const dI=dist(ink,W,H),rS=mm(o.solidMax/2),core=new Uint8Array(N);for(let i=0;i<N;i++)core[i]=dI[i]>rS?1:0;
+ dropSmall(core,W,H,Math.round(mm(Math.max(1.5,o.solidMax*0.6))**2));   // thick spots where lines meet are not black areas
+ const nc=new Uint8Array(N);for(let i=0;i<N;i++)nc[i]=core[i]?0:1;const dC=dist(nc,W,H),solid=new Uint8Array(N),fill=new Uint8Array(N);
+ for(let i=0;i<N;i++)solid[i]=ink[i]&&dC[i]<=rS+1.5?1:0;
+ // small black shapes (eyes, nostrils, letters) stay filled; big ones become an outline
+ const skAll=Uint8Array.from(ink);thin(skAll,W,H);
+ // lightness of the ground around the ink (ink itself left out)
+ const gw=new Float32Array(N),gl=new Float32Array(N);for(let i=0;i<N;i++){gw[i]=ink[i]?0:1;gl[i]=ink[i]?0:L[i]}const bgw=blur(gw,W,H,mm(1.2)),bgl=blur(gl,W,H,mm(1.2));
+ if(!photo)componentSizes(ink,W,H,comp=>{let x0=1e9,y0=1e9,x1=-1,y1=-1,len=0,sumL=0,sumM=0;for(const i of comp){const xx=i%W,yy=(i-xx)/W;if(xx<x0)x0=xx;if(xx>x1)x1=xx;if(yy<y0)y0=yy;if(yy>y1)y1=yy;len+=skAll[i];sumL+=Lb[i];sumM+=bgw[i]>0.02?bgl[i]/bgw[i]:0}
+  const bw=x1-x0+1,bh=y1-y0+1,big=Math.max(bw,bh),wid=comp.length/Math.max(1,len);
+  const blob=big<mm(4)&&comp.length/(bw*bh)>0.4,                 // eye, nostril, dot
+        letter=big<mm(30)&&wid>=mm(0.75)&&wid>=o.lw/PPM*mm(1.6)&&sumL/comp.length<25&&sumM/comp.length>60;  // solid black on a light ground (lettering)  // separate bold piece, e.g. a letter
+  if(blob||letter)for(const i of comp){solid[i]=0;fill[i]=1}
+  else if(o.follow)for(const i of comp)solid[i]=solid[i]&&comp.length>mm(o.solidMax*2.5)**2?1:0});
+ for(let i=0;i<N;i++)if(fill[i])solid[i]=0;
+ const thinInk=new Uint8Array(N);for(let i=0;i<N;i++)thinInk[i]=ink[i]&&!solid[i]&&!fill[i]?1:0;
+ if(o.follow&&!photo)for(let i=0;i<N;i++)if(thinInk[i])fill[i]=1;
+ // 3. centre lines of the ink lines
+ const sk=Uint8Array.from(thinInk);thin(sk,W,H);prune(sk,W,H,Math.round(mm(photo?0.8:[2,1.6,1.3,1,0.8][D])));
+ // outline of big black areas
+ for(let y=1;y<H-1;y++)for(let x2=1;x2<W-1;x2++){const i=y*W+x2;if(!solid[i])continue;if((!solid[i-1]&&!thinInk[i-1])||(!solid[i+1]&&!thinInk[i+1])||(!solid[i-W]&&!thinInk[i-W])||(!solid[i+W]&&!thinInk[i+W]))sk[i]=1}
+ // 4. colour / tone boundaries (flower against grey, white stripe on black, pink ear on white ...)
+ let [kl,ka,kb]=kuwahara(L,A,B,W,H,Math.max(1,Math.round(mm(photo?[0.9,0.75,0.6,0.5,0.4][D]:0.45))));[kl,ka,kb]=kuwahara(kl,ka,kb,W,H,Math.max(1,Math.round(mm(0.3))));
+ const hiD=photo?[26,20,15,11,8][D]:[34,27,21,16,12][D],ed=canny(kl,ka,kb,W,H,hiD,hiD*0.45);
+ const ni=new Uint8Array(N);for(let i=0;i<N;i++)ni[i]=ink[i]||fill[i]?0:1;const dInk=dist(ni,W,H),near=2+mm(0.25);
+ if(!photo)for(let i=0;i<N;i++)if(ed[i]&&dInk[i]>near)sk[i]=1;   // photos: area outlines below instead
+ if(photo){const g=blur(kl,W,H,mm(0.3)),hs=[...g].sort((a,b)=>a-b),nl=[2,3,3,4,5][D],th=[];for(let j=1;j<nl;j++)th.push(hs[Math.floor(hs.length*j/nl)]);
+  const band=new Uint8Array(N);for(let i=0;i<N;i++){let v=0;for(const t of th)if(g[i]>t)v++;band[i]=v}
+  cleanBands(band,W,H,Math.round(mm([5,4,3,2.4,1.8][D])**2));
+  // only where the change is sharp (shape edge), not soft shading on a face; skip where an edge line already runs
+  const ne=new Uint8Array(N);for(let i=0;i<N;i++)ne[i]=ed[i]?0:1;const dE=dist(ne,W,H),gmin=[2.2,1.9,1.6,1.3,1.05][D];
+  const sharp=i=>{const xx=i%W,yy=(i-xx)/W;if(xx<1||yy<1||xx>=W-1||yy>=H-1)return false;return Math.hypot(g[i+1]-g[i-1],g[i+W]-g[i-W])/2>=gmin};const be=new Uint8Array(N);
+  for(let y=0;y<H-1;y++)for(let x2=0;x2<W-1;x2++){const i=y*W+x2;if(band[i]!==band[i+1]){const j=band[i]<band[i+1]?i:i+1;if(sharp(j))be[j]=1}if(band[i]!==band[i+W]){const j=band[i]<band[i+W]?i:i+W;if(sharp(j))be[j]=1}}
+  dropSmall(be,W,H,Math.round(mm(1.5)));
+  // fine dark lines (eyelids, lips, hair strands) only where no area outline runs, and only if long enough
+  const nb2=new Uint8Array(N);for(let i=0;i<N;i++)nb2[i]=be[i]?0:1;const dB=dist(nb2,W,H);for(let i=0;i<N;i++)if(sk[i]&&dB[i]<3+mm(0.3))sk[i]=0;
+  dropSmall(sk,W,H,Math.round(mm([4,3.5,3,2.5,2][D])));for(let i=0;i<N;i++)if(be[i])sk[i]=1;
+  const L255=new Float32Array(N);for(let i=0;i<N;i++)L255[i]=L[i]*2.55;const bgm=o.noBg===false?null:bgMask(L255,W,H,mm);
+  if(bgm)for(let i=0;i<N;i++)if(bgm[i]>mm(1.2))sk[i]=0}
+ // 5. clean up: 1 px lines, join small breaks, drop crumbs
+ thin(sk,W,H);unstair(sk,W,H);
+ const tgt=new Uint8Array(N);for(let i=0;i<N;i++)tgt[i]=sk[i]||fill[i]?1:0;
+ linkGaps(sk,tgt,W,H,mm([1.0,1.0,0.9,0.8,0.7][D]));
+ thin(sk,W,H);unstair(sk,W,H);prune(sk,W,H,Math.round(mm(0.6)));
+ dropSmall(sk,W,H,Math.round(mm([5,4,3,2.2,1.6][D])));
+ dropSmall(fill,W,H,Math.round(mm(0.3)**2));
+ // 6. draw: smooth strokes at an even width (+ filled small black shapes)
+ const paths=tracePaths(sk,W,H),k=OW/W;
+ const oc=document.createElement('canvas');oc.width=OW;oc.height=OH;const ox=oc.getContext('2d',{willReadFrequently:true});ox.fillStyle='#fff';ox.fillRect(0,0,OW,OH);
+ // filled shapes: blur the mask a little and scale it up smoothly so the edges are clean
+ {const fm=new Float32Array(N);for(let i=0;i<N;i++)fm[i]=fill[i]?255:0;const fb=blur(fm,W,H,0.7),fc=document.createElement('canvas');fc.width=W;fc.height=H;const fx=fc.getContext('2d'),id=fx.createImageData(W,H);
+  for(let i=0;i<N;i++){const v=255-fb[i];id.data[i*4]=id.data[i*4+1]=id.data[i*4+2]=v;id.data[i*4+3]=255}fx.putImageData(id,0,0);ox.imageSmoothingEnabled=true;ox.imageSmoothingQuality='high';ox.globalCompositeOperation='multiply';ox.drawImage(fc,0,0,OW,OH);ox.globalCompositeOperation='source-over'}
+ ox.strokeStyle='#000';ox.lineWidth=o.lw;ox.lineCap='round';ox.lineJoin='round';
+ for(const p of paths){const q=smoothPath(p,p.closed,4);if(q.length<2)continue;ox.beginPath();ox.moveTo((q[0][0]+.5)*k,(q[0][1]+.5)*k);for(let t=1;t<q.length;t++)ox.lineTo((q[t][0]+.5)*k,(q[t][1]+.5)*k);if(p.closed)ox.closePath();ox.stroke()}
+ const od=ox.getImageData(0,0,OW,OH).data,out=new Uint8Array(OW*OH);for(let i=0;i<OW*OH;i++)out[i]=od[i*4]<128?1:0;
+ return{W:OW,H:OH,out,dots:paths.length}}
+
+
+/* "Already black & white": keep the artwork, just clean it (drop specks too small to print, fill pinholes) */
+function makeBW(img,o){const W=Math.round(o.widthCm*10*PPM),H=Math.round(W*img.height/img.width),N=W*H,mm=v=>v*PPM,D=o.detail-1;
+ const c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});x.fillStyle='#fff';x.fillRect(0,0,W,H);x.imageSmoothingQuality='high';x.drawImage(img,0,0,W,H);
+ const px=x.getImageData(0,0,W,H).data,L=new Float32Array(N);for(let i=0;i<N;i++)L[i]=.299*px[i*4]+.587*px[i*4+1]+.114*px[i*4+2];
+ const Ls=blur(L,W,H,[1.0,0.7,0.5,0.35,0][D]),out=new Uint8Array(N);for(let i=0;i<N;i++)out[i]=Ls[i]<128?1:0;
+ dropSmall(out,W,H,Math.round(mm([0.9,0.7,0.55,0.45,0.35][D])**2));
+ const hole=new Uint8Array(N);for(let i=0;i<N;i++)hole[i]=out[i]?0:1;dropSmall(hole,W,H,Math.round(mm(0.35)**2));for(let i=0;i<N;i++)if(!hole[i])out[i]=1;
+ return{W,H,out}}
+
+/* ---------- UI ---------- */
+function opts(){return{type:$('mode').value,widthCm:+$('wcm').value,detail:+$('detail').value,lw:+$('lw').value,follow:$('follow').checked,noBg:$('nobg').checked,solidMax:3}}
+function labels(){$('wv').textContent=$('wcm').value+' cm';$('dv').textContent=['Simple','Low','Medium','High','Max'][$('detail').value-1]}
+function showSrc(){const c=$('src'),k=Math.min(1,1400/IMG.width);c.width=IMG.width*k;c.height=IMG.height*k;c.getContext('2d').drawImage(IMG,0,0,c.width,c.height)}
+function paint(){if(!RES)return;const {W,H,out}=RES,c=$('out');c.width=W;c.height=H;const x=c.getContext('2d'),im=x.createImageData(W,H),a=im.data,skin=$('look').value==='skin';
+ const bg=skin?[226,186,152]:[255,255,255],fg=skin?[92,44,140]:[0,0,0];for(let i=0;i<W*H;i++){const p=out[i]?fg:bg;a[i*4]=p[0];a[i*4+1]=p[1];a[i*4+2]=p[2];a[i*4+3]=255}x.putImageData(im,0,0)}
+let tmr=0;function run(){if(!IMG)return;labels();clearTimeout(tmr);$('st').textContent='Working…';tmr=setTimeout(()=>{const t0=performance.now(),o=opts();
+ try{RES=o.type==='bw'?makeBW(IMG,o):makeOutline(IMG,o)}catch(e){$('st').textContent='Something went wrong: '+e.message;return}paint();
+ $('st').textContent='Stencil '+(RES.W/PPM/10).toFixed(1)+' × '+(RES.H/PPM/10).toFixed(1)+' cm · '+Math.round(performance.now()-t0)+' ms';
+ const f=+$('pscale').value/100;$('warn').textContent=(RES.W/PPM>210*f||RES.H/PPM>297*f)?'This stencil is bigger than one A4 sheet. The download shows only what fits; Inkling will split big designs across sheets.':''},30)}
+// realistic art reads better with fine lines, flash with medium/bold
+$('mode').addEventListener('change',()=>{const m=$('mode').value;if(m==='photo')$('lw').value='2';else if(m==='drawing'&&$('lw').value==='2')$('lw').value='3'});
+['mode','wcm','detail','lw','follow','nobg'].forEach(id=>$(id).addEventListener('change',run));['wcm','detail'].forEach(id=>$(id).addEventListener('input',labels));
+$('look').onchange=paint;
+$('file').onchange=e=>{const f=e.target.files[0];if(!f)return;const u=URL.createObjectURL(f),im=new Image();im.onload=()=>{IMG=im;showSrc();run()};im.src=u};
+try{const v=localStorage.getItem('inkling.pscale');if(v)$('pscale').value=v}catch(e){}
+$('pscale').onchange=()=>{try{localStorage.setItem('inkling.pscale',$('pscale').value)}catch(e){}};
+/* PNG for the printer: A4 shape x printer scale, stencil centred, 1 px = 1 printer dot, dpi tag */
+function crc32(b){let c,t=crc32.t;if(!t){t=crc32.t=[];for(let n=0;n<256;n++){c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}}c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=t[(c^b[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0}
+async function withDpi(blob){const s=new Uint8Array(await blob.arrayBuffer()),p=Math.round(DPI/0.0254),ch=new Uint8Array(21),dv=new DataView(ch.buffer);dv.setUint32(0,9);ch.set([112,72,89,115],4);dv.setUint32(8,p);dv.setUint32(12,p);ch[16]=1;dv.setUint32(17,crc32(ch.subarray(4,17)));const o=new Uint8Array(s.length+21);o.set(s.subarray(0,33));o.set(ch,33);o.set(s.subarray(33),54);return new Blob([o],{type:'image/png'})}
+$('dl').onclick=async()=>{if(!RES)return;const f=+$('pscale').value/100,PW=Math.round(210*f*PPM),PH=Math.round(297*f*PPM),c=document.createElement('canvas');c.width=PW;c.height=PH;const x=c.getContext('2d');
+ x.fillStyle='#fff';x.fillRect(0,0,PW,PH);const im=x.createImageData(RES.W,RES.H),a=im.data;for(let i=0;i<RES.W*RES.H;i++){const v=RES.out[i]?0:255;a[i*4]=a[i*4+1]=a[i*4+2]=v;a[i*4+3]=255}
+ x.putImageData(im,Math.round((PW-RES.W)/2),Math.round((PH-RES.H)/2));const b=await withDpi(await new Promise(r=>c.toBlob(r,'image/png'))),u=URL.createObjectURL(b),l=document.createElement('a');l.href=u;l.download='inkling-stencil.png';document.body.appendChild(l);l.click();l.remove();setTimeout(()=>URL.revokeObjectURL(u),2000)};
+labels();
+</script>
+</body>
+</html>

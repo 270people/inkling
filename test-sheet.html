@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inkling test sheet</title>
+<style>
+:root{--bg:#f4f3f7;--card:#fff;--ink:#1d1b26;--mute:#6b6878;--line:#e2e0ea;--acc:#5b3fd6;--warn:#a2410f}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif}
+.wrap{max-width:1000px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}
+.mute{color:var(--mute)}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px 18px;margin:14px 0}
+.bar{display:flex;flex-wrap:wrap;gap:12px 16px;align-items:center}
+button,select,input{font:inherit;padding:8px 12px;border-radius:8px;border:1px solid var(--line);background:#fff}
+button{cursor:pointer}
+button.pri{background:var(--acc);color:#fff;border-color:var(--acc)}
+input[type=number]{width:90px}
+ol{margin:6px 0 0;padding-left:22px}li{margin:4px 0}
+#warn{color:var(--warn)}
+.sheet{background:#fff;border:1px solid var(--line);border-radius:6px;width:100%;max-width:640px;display:block;margin:0 auto;image-rendering:pixelated}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Inkling stencil test sheet</h1>
+  <div class="mute">One page that tests your own printer, stencil paper and transfer solution, so Inkling can use real numbers instead of guesses.</div>
+
+  <div class="card">
+    <div class="bar">
+      <label>Printer resolution
+        <select id="dpi"><option value="203">203 dpi (most tattoo printers)</option><option value="300">300 dpi (Brother PJ-7x3 / PJ-8x3)</option></select>
+      </label>
+      <label>Last time the 100 mm ruler measured <input id="meas" type="number" min="60" max="130" step="0.5" value="100"> mm</label>
+    </div>
+    <div class="bar" style="margin-top:12px">
+      <button class="pri" id="png">Download PNG (best)</button>
+      <button id="pdf">Download PDF</button>
+      <span class="mute" id="st"></span>
+    </div>
+    <div id="warn" style="margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <b>How to use it</b>
+    <ol>
+      <li>Pick your printer's resolution (if unsure, 203 dpi).</li>
+      <li>If you printed this sheet before and the 100 mm ruler came out a different length, type what it measured (for example 90). The sheet is then made smaller or bigger so your printer app prints it at true size.</li>
+      <li>Download the <b>PNG</b> and print it from your tattoo printer app. Some printer apps turn PDFs into a blurry picture, so PNG is safer.</li>
+      <li>Measure both 100 mm rulers with a real ruler before putting it on skin.</li>
+      <li>Transfer it to practice skin or your forearm as you normally would. Take photos right away, after 15 minutes, and after wiping 10 times.</li>
+    </ol>
+  </div>
+
+  <canvas id="cv" class="sheet"></canvas>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+/* All content is laid out in real millimetres inside a 180 x 250 mm box.
+   The page image keeps the A4 shape, but its size is A4 x (measured/100), so a printer app
+   that shrinks the page to fit its paper ends up printing the content at true size. */
+const $=id=>document.getElementById(id),CW=180,CH=250;
+let dpi=203,ppm=dpi/25.4,f=1,OX=0,OY=0,cv=$('cv'),x;
+const P=mm=>Math.round(mm*ppm);
+const mmOf=d=>(d/ppm).toFixed(2);
+function rect(xm,ym,wd,hd){x.fillRect(P(OX+xm),P(OY+ym),Math.max(1,Math.round(wd)),Math.max(1,Math.round(hd)))}   // position in mm, size in dots
+function disc(xd,yd,d){const ox=Math.round(xd-d/2),oy=Math.round(yd-d/2),r2=(d/2)*(d/2);for(let j=0;j<d;j++)for(let i=0;i<d;i++){const dx=i+.5-d/2,dy=j+.5-d/2;if(dx*dx+dy*dy<=r2+.01)x.fillRect(ox+i,oy+j,1,1)}} // position in dots
+function txt(s,xm,ym,size,bold){x.font=(bold?'700 ':'')+P(size)+'px Arial,Helvetica,sans-serif';x.fillText(s,P(OX+xm),P(OY+ym))}
+function head(s,xm,ym){txt(s,xm,ym,3.2,true)}
+const std=()=>dpi>=300?5:4;
+const D=mm=>P(mm);                                     // mm -> dots (for sizes)
+const X=mm=>P(OX+mm),Y=mm=>P(OY+mm);                   // mm -> dots (for positions)
+
+function build(){
+ dpi=+$('dpi').value;ppm=dpi/25.4;let m=+$('meas').value;if(!(m>=60&&m<=130))m=100;f=m/100;
+ const PW=210*f,PH=297*f;OX=(PW-CW)/2;OY=(PH-CH)/2;
+ cv.width=P(PW);cv.height=P(PH);x=cv.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,cv.width,cv.height);x.fillStyle='#000';
+ $('warn').textContent=PW<CW+4?'That measurement is too small for the sheet to fit. Use the PNG (PDFs shrink more), and check the printer app for an "actual size" or "no margins" option.':'';
+
+ txt('INKLING STENCIL TEST SHEET',0,6,5,true);
+ txt(dpi+' dpi · 1 printer dot = '+(25.4/dpi).toFixed(3)+' mm'+(f!==1?' · page made '+Math.round(f*100)+'% to undo app shrinking':''),0,11.5,2.6);
+
+ // A. line ladder
+ head('A. LINE THICKNESS',0,20);
+ for(let n=1;n<=8;n++){const y=25+(n-1)*5;rect(0,y,D(40),n);txt(n+' dot'+(n>1?'s':'')+' = '+mmOf(n)+' mm',43,y+1.3,2.6)}
+
+ // B. gap ladder
+ head('B. GAP BETWEEN LINES',96,20);
+ const L=std();[0.25,0.5,0.75,1,1.5,2].forEach((g,k)=>{const xm=97+k*13.5,gp=Math.max(1,D(g));rect(xm,25,L,D(18));x.fillRect(X(xm)+L+gp,Y(25),L,D(18));txt(mmOf(gp),96+k*13.5,47.5,2.4)});
+ txt('gap in mm (lines are '+L+' dots = '+mmOf(L)+' mm)',96,51.5,2.3);
+
+ // E. dotted lines
+ head('E. DOTTED LINES',96,59);
+ [1.2,1.6,2.0].forEach((pc,k)=>{const y=Y(64+k*5),d=std(),step=pc*ppm;for(let t=0;t*step<=D(52);t++)disc(X(97)+t*step,y,d);txt('every '+pc+' mm',152,64+k*5+1,2.5)});
+
+ // C. dot grid
+ head('C. DOT SIZE × GAP BETWEEN DOTS',0,82);
+ const gaps=[0.3,0.6,1.0];gaps.forEach((g,c)=>txt('gap '+g+' mm',28+c*40,87,2.6,true));
+ for(let d=2;d<=6;d++){const y0=89+(d-2)*9.5;txt(d+' dots ('+mmOf(d)+')',0,y0+4.5,2.4);
+  gaps.forEach((g,c)=>{const pitch=d+g*ppm,x0=X(28+c*40),y1=Y(y0),w=D(34),h=D(7);for(let yy=d/2;yy<=h-d/2;yy+=pitch)for(let xx=d/2;xx<=w-d/2;xx+=pitch)disc(x0+xx,y1+yy,d)})}
+
+ // D. shading bands (hex grid, standard dot)
+ head('D. SHADING DOTS (light / mid / dark)',0,142);
+ [3.0,2.0,1.2].forEach((s,k)=>{const d=std(),x0=X(k*55),y0=Y(146),w=D(50),h=D(18),sp=s*ppm,rh=sp*Math.sqrt(3)/2;let row=0;
+  for(let yy=d/2;yy<=h-d/2;yy+=rh,row++)for(let xx=(row%2?sp/2:0)+d/2;xx<=w-d/2;xx+=sp)disc(x0+xx,y0+yy,d);txt('dots every '+s+' mm',k*55,168,2.5)});
+
+ // vertical 100 mm ruler
+ txt('100 mm',170,79,2.3);x.fillRect(X(179),Y(82),2,D(100));
+ for(let k=0;k<=100;k++){const tl=k%10===0?3:k%5===0?2:1.2;x.fillRect(X(179)-D(tl),Y(82+k),D(tl),2)}
+
+ // F. bad examples
+ head('F. SOLID AREAS',0,177);
+ x.fillRect(X(0),Y(180),D(8),D(8));txt('solid fill',0,192,2.4);
+ // G. mirror test
+ head('G. MIRROR TEST',96,177);
+ txt('INKLING →',96,187,6,true);txt('R',150,194,14,true);
+ txt('Does it read correctly on skin?',96,197,2.4);
+
+ // H. horizontal ruler
+ head('H. 100 mm RULER',0,202);
+ x.fillRect(X(0),Y(208),D(100),2);for(let k=0;k<=100;k++){const tl=k%10===0?3:k%5===0?2:1.2;x.fillRect(X(k),Y(208)-D(tl),2,D(tl));if(k%10===0)txt(String(k),k-(k>9?1.3:0.6),212.5,2.3)}
+
+ // I. notes
+ head('I. NOTES',0,221);
+ [['Printer',0,227],['Darkness setting',92,227],['Paper brand',0,234],['Transfer solution',92,234],['Thinnest clean line (A)',0,241],['Smallest open gap (B)',92,241],['Ruler measured (H)',0,248],['Mirror (G): correct / reversed',92,248]].forEach(([l,xm,ym])=>{txt(l,xm,ym,2.4);const s=xm+(l.length>20?42:30),e=xm===0?86:CW;x.fillRect(X(s),Y(ym)+1,D(e-s),1)});
+
+ // pure black/white only (thermal printers can only do on/off)
+ const im=x.getImageData(0,0,cv.width,cv.height),a=im.data;for(let i=0;i<a.length;i+=4){const v=a[i]<128?0:255;a[i]=a[i+1]=a[i+2]=v;a[i+3]=255}x.putImageData(im,0,0);
+ // 85% grey patch drawn after, on purpose
+ x.fillStyle='rgb(38,38,38)';x.fillRect(X(22),Y(180),D(8),D(8));x.fillStyle='#000';x.font=D(2.4)+'px Arial,Helvetica,sans-serif';x.fillText('85% grey',X(22),Y(192));
+ $('st').textContent='Page '+PW.toFixed(0)+' × '+PH.toFixed(0)+' mm · '+cv.width+' × '+cv.height+' dots';
+}
+
+/* PNG with a real dpi tag (pHYs chunk) */
+function crc32(b){let c,t=crc32.t;if(!t){t=crc32.t=[];for(let n=0;n<256;n++){c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c>>>0}}c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=t[(c^b[i])&255]^(c>>>8);return(c^0xFFFFFFFF)>>>0}
+async function pngWithDpi(){const blob=await new Promise(r=>cv.toBlob(r,'image/png')),src=new Uint8Array(await blob.arrayBuffer()),ppmtr=Math.round(dpi/0.0254);
+ const ch=new Uint8Array(21),dv=new DataView(ch.buffer);dv.setUint32(0,9);ch.set([112,72,89,115],4);dv.setUint32(8,ppmtr);dv.setUint32(12,ppmtr);ch[16]=1;dv.setUint32(17,crc32(ch.subarray(4,17)));
+ const at=33,out=new Uint8Array(src.length+21);out.set(src.subarray(0,at));out.set(ch,at);out.set(src.subarray(at),at+21);return new Blob([out],{type:'image/png'})}
+function dl(blob,name){const u=URL.createObjectURL(blob),a=document.createElement('a');a.href=u;a.download=name;document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(u),2000)}
+const fname=ext=>'inkling-test-sheet-'+dpi+'dpi'+(f!==1?'-'+Math.round(f*100)+'pct':'')+'.'+ext;
+$('png').onclick=async()=>dl(await pngWithDpi(),fname('png'));
+$('pdf').onclick=()=>{if(!window.jspdf){$('st').textContent='PDF needs an internet connection. Use the PNG instead.';return}
+ const PW=210*f,PH=297*f,doc=new jspdf.jsPDF({unit:'mm',format:[PW,PH],orientation:'portrait'});doc.addImage(cv.toDataURL('image/png'),'PNG',0,0,PW,PH,undefined,'NONE');dl(doc.output('blob'),fname('pdf'))};
+$('dpi').onchange=build;$('meas').oninput=build;build();
+</script>
+</body>
+</html>
